@@ -138,7 +138,7 @@ def truncate_context_greedily(
     dropped_count = 0
 
     for turn in reversed(checked_history):
-        turn_text = f"{turn['role']}: {turn['content']}"
+        turn_text = f"{turn.get('role')}: {turn.get('content')}"
         turn_tokens = counter.count(turn_text)[0]
         if used_tokens + turn_tokens <= history_budget:
             kept_history.insert(0, turn)

@@ -162,6 +162,36 @@ def truncate_context_greedily(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class AskWithTruncationResult:
+    """
+    截断 + 问答聚合结果
+
+    Attributes:
+        truncation: 截断详情
+        answer: 模型回答文本
+        usage: API usage 原始对象（可能为 None）
+        model: 实际使用模型
+        base_url: 实际调用地址
+    """
+
+    truncation: TruncationResult
+    answer: str
+    usage: Any
+    model: str
+    base_url: str
+
+    def as_dict(self) -> dict[str, Any]:
+        """转换为字典。"""
+        return {
+            "truncation_result": self.truncation.as_dict(),
+            "answer": self.answer,
+            "usage": self.usage,
+            "model": self.model,
+            "base_url": self.base_url,
+        }
+
+
 def ask_with_truncated_context(
     *,
     system_prompt: str,
@@ -172,7 +202,7 @@ def ask_with_truncated_context(
     mode: llm_common.LLMMode | str | None = None,
     model_name: str | None = None,
     prefer_dotenv: bool = False,
-) -> dict[str, Any]:
+) -> AskWithTruncationResult:
     """
     先截断，再执行多轮对话调用。
 
@@ -187,7 +217,7 @@ def ask_with_truncated_context(
         prefer_dotenv: 是否优先使用 .env 覆盖环境变量
 
     Returns:
-        包含截断信息与问答结果的字典
+        截断信息与问答结果的结构化对象
     """
     truncation = truncate_context_greedily(
         system_prompt=system_prompt,
@@ -210,13 +240,13 @@ def ask_with_truncated_context(
         prefer_dotenv=prefer_dotenv,
     )
 
-    return {
-        "truncation_result": truncation.as_dict(),
-        "answer": qa.answer,
-        "usage": qa.usage,
-        "model": qa.model,
-        "base_url": qa.base_url,
-    }
+    return AskWithTruncationResult(
+        truncation=truncation,
+        answer=qa.answer,
+        usage=qa.usage,
+        model=qa.model,
+        base_url=qa.base_url,
+    )
 
 
 if __name__ == "__main__":

@@ -366,22 +366,27 @@ AI：我叫小爱同学。
    - 再细看重点
    - 像人读书一样
 
-### 最新发展
+### 最新发展（截至 2026.03）
 
 #### GPT-5.3
 
-- 窗口：128K tokens
-- 约等于：300页书
+- 发布：2025 年末
+- 窗口：128K tokens（约 300 页书）
+- 亮点：内置可配置推理模式（`reasoning_effort: low/high`），GPT-5.3-Codex 变体专注代码与安全任务
 
-#### Claude 4.6
+#### Claude Sonnet 4.6（Anthropic）
 
-- 窗口：200K→1M tokens
-- 约等于：整套《三体》三部曲
+- 发布：2026.02.17，与 Claude Opus 4.6 同期发布
+- 窗口：标准 200K tokens；**1M tokens 窗口处于 Beta**（需 `context-1m` Header，约 750,000 词 / 整套《三体》三部曲）
+- 亮点：超限时自动上下文压缩（summarize older messages），ARC-AGI-2 达 60.4%，支持 extended thinking
 
-#### Gemini 3.1
+#### Gemini 3.1 Pro（Google DeepMind）
 
-- 窗口：1M→10M tokens
-- 约等于：所有《指环王》系列
+- 发布：2026.02.19
+- 窗口：**1M tokens 输入**，最大 64K tokens 输出（约等于所有《指环王》系列文字）
+- 亮点：原生多模态（文本/音频/图像/视频/完整代码仓库），专为 Agentic 工作流和算法设计优化
+
+> ⚠️ **架构师视角**：1M Token 窗口已成现实，但并不意味着应该无脑全塞——长上下文会同时带来成本激增（Claude Sonnet 4.6：超 200K 部分 \$6/M 输入）与注意力退化风险。何时用长上下文、何时用 RAG、何时混合，是第 8 周的核心决策矩阵内容。
 
 ### 生动类比总结
 
@@ -542,101 +547,7 @@ KV-Cache 用**空间换时间**，代价是显存（GPU Memory）：
 
 > **关键发现**：中文每个汉字几乎对应 1 个 Token，而英文平均 3-4 个字符才 1 个 Token。同样意思的内容，中文比英文贵约 3 倍 API 费用。
 
-### 实战二：Context 贪婪截断策略模拟器
-
-```python
-import tiktoken
-from typing import List
-
-def greedy_context_truncator(
-    system_prompt: str,
-    history: List[dict],
-    user_query: str,
-    max_tokens: int = 8192,
-    reserve_for_output: int = 1024,
-    model: str = "gpt-4o"
-) -> dict:
-    """
-    贪婪截断策略：在 Token 预算内，优先保留 system_prompt 和最新对话，
-    从最旧的历史记录开始丢弃。
-
-    Args:
-        system_prompt: 系统提示词（最高优先级，绝不丢弃）
-        history: 历史对话列表，格式 [{"role": "user/assistant", "content": "..."}]
-        user_query: 当前用户提问（高优先级，绝不丢弃）
-        max_tokens: 模型最大上下文窗口
-        reserve_for_output: 为模型输出预留的 Token 数
-        model: 使用的模型名称
-    """
-    enc = tiktoken.encoding_for_model(model)
-
-    def token_count(text: str) -> int:
-        return len(enc.encode(text))
-
-    # 计算可用预算（总窗口 - 输出预留）
-    available_budget = max_tokens - reserve_for_output
-
-    # 固定占用：system_prompt + user_query（这两个绝不丢弃）
-    fixed_tokens = token_count(system_prompt) + token_count(user_query)
-    history_budget = available_budget - fixed_tokens
-
-    if history_budget < 0:
-        raise ValueError(f"system_prompt + user_query 已超出预算！占用 {fixed_tokens} tokens，预算仅 {available_budget}")
-
-    # 贪婪策略：从最新历史开始往前填充（保留最近的对话）
-    kept_history = []
-    used_tokens = 0
-    dropped_count = 0
-
-    for turn in reversed(history):
-        turn_text = f"{turn['role']}: {turn['content']}"
-        turn_tokens = token_count(turn_text)
-
-        if used_tokens + turn_tokens <= history_budget:
-            kept_history.insert(0, turn)  # 插到头部保持顺序
-            used_tokens += turn_tokens
-        else:
-            dropped_count += 1  # 太旧的历史，丢弃
-
-    total_used = fixed_tokens + used_tokens
-
-    return {
-        "status": "ok",
-        "total_tokens_used": total_used,
-        "available_budget": available_budget,
-        "utilization_pct": round(total_used / available_budget * 100, 1),
-        "history_turns_kept": len(kept_history),
-        "history_turns_dropped": dropped_count,
-        "kept_history": kept_history,
-        "warning": "⚠️ 部分历史已被截断！" if dropped_count > 0 else None,
-    }
-
-
-if __name__ == "__main__":
-    system = "你是一个专业的 AI 助手，回答要简洁准确。"
-    history = [
-        {"role": "user", "content": "我叫小明，在北京工作。"},
-        {"role": "assistant", "content": "你好小明！很高兴认识你。"},
-        {"role": "user", "content": "我最近在学习 AI Agent 架构。"},
-        {"role": "assistant", "content": "AI Agent 架构是个很有前景的方向！"},
-        {"role": "user", "content": "上周我看了 Transformer 的论文。"},
-        {"role": "assistant", "content": "Attention Is All You Need 是经典之作。"},
-    ]
-    query = "请帮我总结一下 KV-Cache 的核心原理。"
-
-    result = greedy_context_truncator(
-        system_prompt=system,
-        history=history,
-        user_query=query,
-        max_tokens=500,   # 故意设小，模拟截断
-        reserve_for_output=100,
-    )
-
-    print(f"Token 使用：{result['total_tokens_used']} / {result['available_budget']} ({result['utilization_pct']}%)")
-    print(f"历史保留：{result['history_turns_kept']} 轮，丢弃：{result['history_turns_dropped']} 轮")
-    if result["warning"]:
-        print(result["warning"])
-```
+### 实战二：Context 贪婪截断策略模拟器 - 见 [context_truncator.py](context_truncator.py)
 
 ---
 

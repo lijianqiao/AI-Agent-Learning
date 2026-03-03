@@ -364,11 +364,16 @@ def calculate_token_metrics(
     output_cost = (output_tokens / 1_000_000) * pricing.output_per_1m
     total_cost = input_cost + output_cost
 
+    # compression_ratio 含义：用户输入文本字符数 / 本次总输入 Token 数
+    # 当 usage 来自 API 时，input_tokens 含 system+history+user，分母更大，比值偏低；
+    # 仅作量级参考，不代表精确压缩比。
+    compression_ratio = round(len(question) / input_tokens, 2) if input_tokens else None
+
     return TokenMetrics(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         tokenizer_source=source,
-        compression_ratio=round(len(question) / input_tokens, 2) if input_tokens else None,
+        compression_ratio=compression_ratio,
         pricing_currency=pricing.currency,
         estimated_input_cost=round(input_cost, 6),
         estimated_output_cost=round(output_cost, 6),

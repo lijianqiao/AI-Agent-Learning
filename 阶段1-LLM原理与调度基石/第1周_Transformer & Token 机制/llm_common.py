@@ -255,9 +255,13 @@ def _validate_messages(messages: Sequence[LLMMessage]) -> list[LLMMessage]:
         role = message.get("role")
         content = message.get("content")
         if role not in allowed_roles:
-            raise ValueError(f"第 {index} 条消息 role 非法：{role}")
+            raise ValueError(f"第 {index} 条消息 role 非法：{role!r}，允许值：{allowed_roles}")
+        if content is None:
+            raise ValueError(f"第 {index} 条消息缺少 content 字段")
         if not isinstance(content, str):
-            raise ValueError(f"第 {index} 条消息 content 必须为字符串")
+            raise ValueError(
+                f"第 {index} 条消息 content 必须为字符串，实际类型：{type(content).__name__}"
+            )
         checked.append({"role": role, "content": content})
     return checked
 

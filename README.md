@@ -1,4 +1,4 @@
-# AI Agent 架构师 — 26 周系统学习路线
+# AI Agent 架构师 — 非专业人 26 周系统学习路线
 
 > 从 LLM 底层原理到企业级多智能体生产系统，一条完整的 AI Agent 架构师成长路径。
 
@@ -27,16 +27,16 @@
 
 ## 核心技术栈
 
-| 领域 | 技术 |
-| --- | --- |
-| LLM 调用 | OpenAI API, LiteLLM, 语义路由 |
-| RAG | LangChain, LlamaIndex, Milvus/Weaviate, BM25, Cross-Encoder |
-| Agent 编排 | LangGraph, DSPy, MCP 协议 |
-| 多智能体 | CrewAI, MetaGPT, A2A 协议 |
-| Memory | 滑动窗口, 向量归档, 递归摘要, 三层聚合器 |
-| 安全 | NeMo Guardrails, E2B Sandbox, Prompt 防注入 |
-| 生产化 | Kafka/RabbitMQ, Redis 语义缓存, 自动降级容灾 |
-| 评测 | Ragas, TruLens |
+| 领域       | 技术                                                        |
+| ---------- | ----------------------------------------------------------- |
+| LLM 调用   | OpenAI API, LiteLLM, 语义路由                               |
+| RAG        | LangChain, LlamaIndex, Milvus/Weaviate, BM25, Cross-Encoder |
+| Agent 编排 | LangGraph, DSPy, MCP 协议                                   |
+| 多智能体   | CrewAI, MetaGPT, A2A 协议                                   |
+| Memory     | 滑动窗口, 向量归档, 递归摘要, 三层聚合器                    |
+| 安全       | NeMo Guardrails, E2B Sandbox, Prompt 防注入                 |
+| 生产化     | Kafka/RabbitMQ, Redis 语义缓存, 自动降级容灾                |
+| 评测       | Ragas, TruLens                                              |
 
 ## 项目结构
 
@@ -95,69 +95,69 @@ AI Agent架构师/
 
 ### 阶段 1 — LLM 原理与调度基石
 
-| 周次 | 主题 | 关键词 |
-| --- | --- | --- |
-| W1 | Transformer & Token 机制 | Attention, KV-Cache, Context Window, Token 预算 |
-| W2 | 推理模式与 Prompt 结构 | ReAct, CoT, Tool Calling, Vanilla Agent |
-| W3 | 模型网关与动态路由 | LiteLLM, 语义路由, vLLM/TGI/Ollama, 熔断限流 |
-| W4 | 幻觉剖析与防御 | Grounding, Temperature/Top-p, Confidence Score |
+| 周次 | 主题                     | 关键词                                          |
+| ---- | ------------------------ | ----------------------------------------------- |
+| W1   | Transformer & Token 机制 | Attention, KV-Cache, Context Window, Token 预算 |
+| W2   | 推理模式与 Prompt 结构   | ReAct, CoT, Tool Calling, Vanilla Agent         |
+| W3   | 模型网关与动态路由       | LiteLLM, 语义路由, vLLM/TGI/Ollama, 熔断限流    |
+| W4   | 幻觉剖析与防御           | Grounding, Temperature/Top-p, Confidence Score  |
 
 ### 阶段 2 — 生产级 RAG 架构
 
-| 周次 | 主题 | 关键词 |
-| --- | --- | --- |
-| W5 | 文档处理与 Chunk 策略 | Fixed/Semantic Chunking, Metadata, Ingestion Pipeline |
-| W6 | 向量数据库与 GraphRAG | HNSW, Milvus/Weaviate, 知识图谱, Top-K 调参 |
-| W7 | 混合检索与重排序 | BM25, Dense, RRF 融合, Cross-Encoder Reranker |
-| W8 | 生产级 RAG 与 Agentic RAG | 自适应检索, 查询改写, 多跳问答, Reference Id |
+| 周次 | 主题                      | 关键词                                                |
+| ---- | ------------------------- | ----------------------------------------------------- |
+| W5   | 文档处理与 Chunk 策略     | Fixed/Semantic Chunking, Metadata, Ingestion Pipeline |
+| W6   | 向量数据库与 GraphRAG     | HNSW, Milvus/Weaviate, 知识图谱, Top-K 调参           |
+| W7   | 混合检索与重排序          | BM25, Dense, RRF 融合, Cross-Encoder Reranker         |
+| W8   | 生产级 RAG 与 Agentic RAG | 自适应检索, 查询改写, 多跳问答, Reference Id          |
 
 ### 缓冲期 1
 
-| 周次 | 主题 | 关键词 |
-| --- | --- | --- |
-| W9 | RAG 评测体系 | Ragas, TruLens, CI/CD 自动评测, 黄金测试集 |
+| 周次 | 主题         | 关键词                                     |
+| ---- | ------------ | ------------------------------------------ |
+| W9   | RAG 评测体系 | Ragas, TruLens, CI/CD 自动评测, 黄金测试集 |
 
 ### 阶段 3 — Agent 状态机与工作流编排
 
-| 周次 | 主题 | 关键词 |
-| --- | --- | --- |
-| W10 | LangGraph 状态机与 MCP 协议 | StateGraph, Conditional Edge, MCP Server/Client |
-| W11 | 工作流分治与 DSPy 入门 | Planner/Executor, dspy.Signature, ChainOfThought |
-| W12 | DSPy 编译优化与异常自愈 | Teleprompter, 指数退避, Human-in-the-loop |
-| W13 | 链路监控与可观测性 | LangSmith, Arize Phoenix, Trace 树, RequestId |
+| 周次 | 主题                        | 关键词                                           |
+| ---- | --------------------------- | ------------------------------------------------ |
+| W10  | LangGraph 状态机与 MCP 协议 | StateGraph, Conditional Edge, MCP Server/Client  |
+| W11  | 工作流分治与 DSPy 入门      | Planner/Executor, dspy.Signature, ChainOfThought |
+| W12  | DSPy 编译优化与异常自愈     | Teleprompter, 指数退避, Human-in-the-loop        |
+| W13  | 链路监控与可观测性          | LangSmith, Arize Phoenix, Trace 树, RequestId    |
 
 ### 阶段 4 — Memory 系统
 
-| 周次 | 主题 | 关键词 |
-| --- | --- | --- |
-| W14 | 短期记忆与 Token 预算 | 滑动窗口, 提权算法, 80% 阈值释放 |
-| W15 | 长期记忆与用户画像 | 向量归档, 定时 Job, 跨会话召回 |
-| W16 | 递归摘要压缩 | Recursive Summarization, 实体抽取, 20:1 压缩 |
-| W17 | 三层记忆聚合架构 | 短期/中期/长期, 统一聚合器, 50 轮压测 |
+| 周次 | 主题                  | 关键词                                       |
+| ---- | --------------------- | -------------------------------------------- |
+| W14  | 短期记忆与 Token 预算 | 滑动窗口, 提权算法, 80% 阈值释放             |
+| W15  | 长期记忆与用户画像    | 向量归档, 定时 Job, 跨会话召回               |
+| W16  | 递归摘要压缩          | Recursive Summarization, 实体抽取, 20:1 压缩 |
+| W17  | 三层记忆聚合架构      | 短期/中期/长期, 统一聚合器, 50 轮压测        |
 
 ### 缓冲期 2
 
-| 周次 | 主题 | 关键词 |
-| --- | --- | --- |
-| W18 | 微服务解耦重构 | IoC, 接口隔离, 插件化, 圈复杂度 |
+| 周次 | 主题           | 关键词                          |
+| ---- | -------------- | ------------------------------- |
+| W18  | 微服务解耦重构 | IoC, 接口隔离, 插件化, 圈复杂度 |
 
 ### 阶段 5 — 多智能体协作系统
 
-| 周次 | 主题 | 关键词 |
-| --- | --- | --- |
-| W19 | 多 Agent 角色编排 | CrewAI, MetaGPT, 角色预制舱, 产出物溯源 |
-| W20 | 异步通信与 A2A 协议 | Pub/Sub, 黑板模式, A2A vs MCP, 冲突裁定 |
-| W21 | MAS 闭环联动演练 | 五角色流水线, DAG 编排, 全自动博客生产 |
-| W22 | 代码沙盒安全隔离 | E2B Sandbox, 受限 Docker, 恶意命令拦截 |
+| 周次 | 主题                | 关键词                                  |
+| ---- | ------------------- | --------------------------------------- |
+| W19  | 多 Agent 角色编排   | CrewAI, MetaGPT, 角色预制舱, 产出物溯源 |
+| W20  | 异步通信与 A2A 协议 | Pub/Sub, 黑板模式, A2A vs MCP, 冲突裁定 |
+| W21  | MAS 闭环联动演练    | 五角色流水线, DAG 编排, 全自动博客生产  |
+| W22  | 代码沙盒安全隔离    | E2B Sandbox, 受限 Docker, 恶意命令拦截  |
 
 ### 阶段 6 — 生产化与安全
 
-| 周次 | 主题 | 关键词 |
-| --- | --- | --- |
-| W23 | 安全护栏与 Prompt 防注入 | NeMo Guardrails, 三层纵深防御, 95% 拦截率 |
-| W24 | 高并发队列与消峰 | Kafka/RabbitMQ, 异步推理队列, QPS 5x 压测 |
-| W25 | 缓存计算与容灾降级 | Prompt Cache, Redis 语义缓存, 30s 故障切换 |
-| W26 | 企业级系统封卷发布 | 全链路集成测试, 架构白皮书, Ragas 评测报告 |
+| 周次 | 主题                     | 关键词                                     |
+| ---- | ------------------------ | ------------------------------------------ |
+| W23  | 安全护栏与 Prompt 防注入 | NeMo Guardrails, 三层纵深防御, 95% 拦截率  |
+| W24  | 高并发队列与消峰         | Kafka/RabbitMQ, 异步推理队列, QPS 5x 压测  |
+| W25  | 缓存计算与容灾降级       | Prompt Cache, Redis 语义缓存, 30s 故障切换 |
+| W26  | 企业级系统封卷发布       | 全链路集成测试, 架构白皮书, Ragas 评测报告 |
 
 ## 前置要求
 

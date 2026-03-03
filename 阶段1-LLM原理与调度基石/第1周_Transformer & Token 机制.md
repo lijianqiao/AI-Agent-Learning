@@ -538,64 +538,7 @@ KV-Cache 用**空间换时间**，代价是显存（GPU Memory）：
 
 ## 实战：Token 统计器 & Context 贪婪截断模拟器
 
-### 实战一：本地简易 Token 统计器
-
-```python
-# 安装依赖：pip install tiktoken
-import tiktoken
-
-def count_tokens(text: str, model: str = "gpt-4o") -> dict:
-    """
-    统计文本的 Token 数量，并估算 API 费用。
-    """
-    enc = tiktoken.encoding_for_model(model)
-    tokens = enc.encode(text)
-
-    # gpt-4o 参考定价（每 1M tokens）
-    input_price_per_1m = 5.0   # 美元
-    output_price_per_1m = 15.0
-
-    token_count = len(tokens)
-    estimated_cost = (token_count / 1_000_000) * input_price_per_1m
-
-    return {
-        "text_length": len(text),
-        "token_count": token_count,
-        "compression_ratio": round(len(text) / token_count, 2),  # 字符/Token
-        "estimated_input_cost_usd": round(estimated_cost, 6),
-        "tokens_preview": tokens[:10],  # 前10个 Token ID
-    }
-
-
-if __name__ == "__main__":
-    samples = [
-        "Hello, world! This is a test.",
-        "你好，世界！这是一个测试。",
-        "The Transformer architecture uses self-attention mechanisms to process sequences in parallel.",
-    ]
-
-    for text in samples:
-        result = count_tokens(text)
-        print(f"\n文本：{text}")
-        print(f"  字符数：{result['text_length']}")
-        print(f"  Token 数：{result['token_count']}")
-        print(f"  压缩比（字符/Token）：{result['compression_ratio']}")
-        print(f"  估算费用：${result['estimated_input_cost_usd']}")
-```
-
-**预期输出（参考）**：
-
-```
-文本：Hello, world! This is a test.
-  字符数：30
-  Token 数：9
-  压缩比（字符/Token）：3.33
-
-文本：你好，世界！这是一个测试。
-  字符数：13
-  Token 数：13
-  压缩比（字符/Token）：1.0     ← 中文 Token 效率远低于英文
-```
+### 实战一：本地简易 Token 统计器 - 见 [token_count.py](token_count.py)
 
 > **关键发现**：中文每个汉字几乎对应 1 个 Token，而英文平均 3-4 个字符才 1 个 Token。同样意思的内容，中文比英文贵约 3 倍 API 费用。
 

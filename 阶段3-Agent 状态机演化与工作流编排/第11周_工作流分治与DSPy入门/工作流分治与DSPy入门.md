@@ -851,3 +851,202 @@ DSPy 模块化改造 A/B 对比结果（总结模块，3个竞品各测5次）
 | dspy.Predict vs ChainOfThought | 能否说出它们的核心差异和各自适用场景？ | ☐ |
 | DSPy 模块化改造 | 能否将一个手写 Prompt 子任务改造为 DSPy Module？ | ☐ |
 | 第12周铺垫 | 能否解释为什么本周改造是 Teleprompter 自动优化的前提？ | ☐ |
+| 框架选型 | 能否针对给定场景快速说出推荐使用哪个新框架？ | ☐ |
+
+---
+
+## 第五部分学习：新一代 Agent 框架三角选型
+
+### 为什么又出现了新框架？
+
+LangChain 是 2023 年 Agent 框架的代名词，但随着 Agent 应用在生产环境中大规模落地，开发者发现它有几个痛点：
+
+- **过度抽象**：简单任务要写很多胶水代码
+- **调试困难**：链式调用导致出错时很难定位
+- **依赖过重**：`langchain` 包含几十个子模块，启动慢，版本冲突常见
+
+2024-2025 年涌现出三个代表性的新框架，各自解决不同的核心痛点。
+
+### 框架一：OpenAI Agents SDK（轻量多 Agent 编排）
+
+**核心理念**：用最少的代码实现多 Agent 编排，原生支持 Agent 之间的任务移交（Handoffs）。
+
+**最大亮点：Agent Handoffs（任务移交）**
+
+```python
+from agents import Agent, Runner
+
+# 定义专门的子 Agent
+triage_agent = Agent(
+    name="分诊 Agent",
+    instructions="判断用户问题类型，移交给对应专家 Agent",
+    handoffs=["code_agent", "qa_agent"],  # 声明可以移交给谁
+)
+
+code_agent = Agent(
+    name="代码专家 Agent",
+    instructions="专门处理代码相关问题，用 Python 示例解答",
+)
+
+qa_agent = Agent(
+    name="问答专家 Agent",
+    instructions="专门处理概念问题，给出清晰的文字解释",
+)
+
+# 自动路由：triage_agent 会自己决定移交给谁
+result = Runner.run_sync(triage_agent, "帮我写一个快速排序算法")
+# triage_agent → 识别为代码问题 → 自动移交 → code_agent 处理
+print(result.final_output)
+```
+
+**内置 Guardrails**：
+
+```python
+from agents import Agent, input_guardrail, GuardrailFunctionOutput
+
+@input_guardrail
+async def no_sensitive_info(ctx, agent, input):
+    """前置检查：拒绝包含敏感词的输入"""
+    if "密码" in input or "信用卡" in input:
+        return GuardrailFunctionOutput(
+            output_info="检测到敏感信息",
+            tripwire_triggered=True,  # 触发拦截
+        )
+
+agent = Agent(
+    name="助手",
+    instructions="你是一个通用助手",
+    input_guardrails=[no_sensitive_info],
+)
+```
+
+**适合场景**：OpenAI 生态、需要快速搭建多 Agent 流水线、对 Handoffs 需求强烈的场景。
+
+---
+
+### 框架二：PydanticAI（强类型结构化输出）
+
+**核心理念**：用 Pydantic 模型定义 Agent 的输出结构，像写 FastAPI 一样写 Agent。
+
+**最大亮点：类型安全的结构化输出**
+
+```python
+from pydantic import BaseModel
+from pydantic_ai import Agent
+
+# 定义结构化输出模型
+class UserProfile(BaseModel):
+    name: str
+    age: int
+    interests: list[str]
+    risk_level: str  # "low" | "medium" | "high"
+
+# Agent 会自动确保输出符合 UserProfile 的结构
+profile_agent = Agent(
+    "openai:gpt-4o",
+    result_type=UserProfile,  # 指定输出类型
+    system_prompt="从用户对话中提取个人信息，填充 UserProfile",
+)
+
+# 如果 LLM 输出不符合 UserProfile，会自动重试直到结构正确
+result = await profile_agent.run("我叫张三，28岁，喜欢摄影和爬山，不太敢投高风险产品")
+print(result.data.name)       # "张三"（str，类型保证）
+print(result.data.interests)  # ["摄影", "爬山"]（list[str]，类型保证）
+print(result.data.risk_level) # "low"（已规范化）
+```
+
+**依赖注入（Dependency Injection）**：
+
+```python
+from dataclasses import dataclass
+from pydantic_ai import Agent, RunContext
+
+@dataclass
+class Deps:
+    user_id: str
+    db_client: DatabaseClient
+
+agent = Agent(
+    "openai:gpt-4o",
+    deps_type=Deps,  # 声明依赖类型
+)
+
+@agent.tool
+async def get_user_history(ctx: RunContext[Deps]) -> str:
+    """工具可以直接访问依赖（如数据库连接）"""
+    return await ctx.deps.db_client.get_history(ctx.deps.user_id)
+```
+
+**适合场景**：需要强类型保证的生产环境、输出要接入 FastAPI 或数据库的场景、Team 规模大需要类型约束防止 Bug。
+
+---
+
+### 框架三：smolagents（极简 Code Agent）
+
+**核心理念**：让模型直接生成 Python 代码来执行任务，而非调用预定义的工具函数。
+
+**最大亮点：Tool Code Generation（代码即工具）**
+
+```python
+from smolagents import CodeAgent, HfApiModel, DuckDuckGoSearchTool
+
+# 极简初始化，模型无关
+agent = CodeAgent(
+    tools=[DuckDuckGoSearchTool()],  # 提供基础工具
+    model=HfApiModel("Qwen/Qwen2.5-72B-Instruct"),  # 支持任意模型
+)
+
+# Agent 会直接生成 Python 代码来完成任务
+result = agent.run("搜索今天的 AI 新闻，统计各家公司的提及次数，并排序")
+
+```
+
+Agent 内部会生成类似这样的代码并执行：
+
+```python
+# smolagents 内部生成并执行的代码（不是手写的！）
+results = search("today AI news 2026")
+companies = {}
+for article in results:
+    for company in ["OpenAI", "Google", "Anthropic", "Meta"]:
+        if company in article["content"]:
+            companies[company] = companies.get(company, 0) + 1
+
+sorted_companies = sorted(companies.items(), key=lambda x: x[1], reverse=True)
+final_answer(sorted_companies)
+```
+
+**适合场景**：研究原型、需要灵活动态工具生成的场景（不需要预先定义所有工具）、学习 Code Agent 原理。
+
+---
+
+### 三框架选型速查卡
+
+| 场景 | 推荐框架 | 理由 |
+| --- | --- | --- |
+| **多 Agent 分工协作** | OpenAI Agents SDK | 原生 Handoffs，极简多 Agent 编排 |
+| **生产级强类型输出** | PydanticAI | 结构化输出 + 类型安全 + 依赖注入 |
+| **快速原型 / 研究** | smolagents | 极简代码，模型无关，Code Agent 学习最佳入口 |
+| **复杂有状态工作流** | LangGraph | 图结构 + 持久化状态，适合企业级编排 |
+| **Prompt 自动优化** | DSPy | 参数化 Prompt，小样本自动优化 |
+
+> 🔑 架构师视角：这些框架并不互斥。实际生产中常见组合：**LangGraph（状态机主干）+ OpenAI Agents SDK（子 Agent 编排）+ PydanticAI（结构化输出节点）**。选型的核心不是"哪个框架更好"，而是"哪个框架解决了你当前最痛的问题"。
+
+### 从 LangChain 到新框架：架构演进逻辑
+
+```
+2022-2023  LangChain
+    → 首创 Chain / Agent / Tool 抽象，奠定范式
+    → 痛点：过重、调试难、版本乱
+
+2024  新框架崛起
+    ├── LangGraph：解决"有状态工作流"痛点
+    ├── DSPy：解决"Prompt 调优费人工"痛点
+    └── PydanticAI：解决"输出不可靠"痛点
+
+2025  生产驱动
+    ├── OpenAI Agents SDK：解决"多 Agent 编排太重"痛点
+    └── smolagents：解决"工具定义太繁琐"痛点（Code Agent 方向）
+```
+
+理解这条演进线，就能在面试中清晰回答"你为什么选这个框架"——因为你知道它解决了什么问题。

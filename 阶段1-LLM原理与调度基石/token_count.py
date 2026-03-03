@@ -2,360 +2,454 @@
 @Author: li
 @Email: lijianqiao2906@live.com
 @FileName: token_count.py
-@DateTime: 2026/03/03 10:30:00
-@Docs: 通过 DeepSeek API 完成文本问答并统计输入输出 Token、压缩比与费用
-
-Token 计数策略（优先级从高到低）：
-  1. API 返回的 usage.prompt_tokens（精确，以此为准）
-  2a. [GPT 模型]   tiktoken 本地精确计数
-  2b. [DeepSeek]   官方分词器（transformers.AutoTokenizer，需安装 transformers）
-  3.  [DeepSeek 兜底] 官方字符比例估算：中文字符 × 0.6，其余字符 × 0.3
+@DateTime: 2026/03/03 14:45:00
+@Docs: LLM 统一问答 + Token 统计 + 费用估算
 """
 
-import sys
-from dataclasses import dataclass, field
+import argparse
+from dataclasses import dataclass
+from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-# 确保同级目录下的模块可导入，不依赖运行时 CWD
-sys.path.insert(0, str(Path(__file__).parent))
-
-import deepseek_common
-
-# ── 分词器资源初始化 ──────────────────────────────────────────────────────────
-
-# 官方 DeepSeek 分词器目录（项目根目录下）
-_TOKENIZER_DIR = Path(__file__).resolve().parent.parent / "deepseek_v3_tokenizer"
+import llm_common
 
 
-def _load_deepseek_tokenizer():
-    """尝试加载官方 DeepSeek 分词器，失败时静默返回 None。"""
-    try:
-        from transformers import AutoTokenizer  # type: ignore
+class TokenizerStrategy(StrEnum):
+    """
+    分词策略
 
-        if _TOKENIZER_DIR.exists():
-            return AutoTokenizer.from_pretrained(str(_TOKENIZER_DIR), trust_remote_code=True)
-    except Exception:
-        pass
-    return None
+    TIKTOKEN: GPT 系列本地精确计数
+    DEEPSEEK: DeepSeek 官方分词器优先，失败时比例估算
+    RATIO: 字符比例估算（常用于本地模型）
+    """
 
-
-# 模块加载时各初始化一次，避免每次调用重复加载
-_deepseek_tokenizer = _load_deepseek_tokenizer()
+    TIKTOKEN = "tiktoken"
+    DEEPSEEK = "deepseek"
+    RATIO = "ratio"
 
 
-def _get_tiktoken_encoder(encoding_name: str):
-    """获取 tiktoken 编码器，失败时抛出清晰错误。"""
-    try:
-        import tiktoken  # type: ignore
-
-        return tiktoken.get_encoding(encoding_name)
-    except ImportError as e:
-        raise ImportError("使用 GPT 模型需要安装 tiktoken：pip install tiktoken") from e
-
-
-# ── 数据类定义 ────────────────────────────────────────────────────────────────
-
-TokenizerType = Literal["tiktoken", "deepseek", "ollama"]
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ModelPricing:
-    """模型价格配置。
+    """
+    模型计费配置
 
     Attributes:
-        input_cache_hit_per_1m: 输入缓存命中单价（每百万 Token）
-        input_cache_miss_per_1m: 输入缓存未命中单价（每百万 Token）
-        output_per_1m: 输出单价（每百万 Token）
-        currency: 计费货币（CNY / USD）
+        input_cache_hit_per_1m: 输入缓存命中价格（每百万 Token）
+        input_cache_miss_per_1m: 输入缓存未命中价格（每百万 Token）
+        output_per_1m: 输出价格（每百万 Token）
+        currency: 货币单位
     """
 
     input_cache_hit_per_1m: float
     input_cache_miss_per_1m: float
     output_per_1m: float
-    currency: str = "CNY"
+    currency: str
+
+    @classmethod
+    def free(cls) -> "ModelPricing":
+        """构造免费模型计费配置。"""
+        return cls(0.0, 0.0, 0.0, "N/A")
 
 
-@dataclass(frozen=True)
-class ModelConfig:
-    """模型配置。
+@dataclass(frozen=True, slots=True)
+class ModelSpec:
+    """
+    模型配置
 
     Attributes:
-        model: 模型名称
-        tokenizer_type: 本地计数策略，"tiktoken" 用于 GPT 系列，"deepseek" 用于 DeepSeek 系列
-        pricing: 价格配置
-        tiktoken_encoding: tiktoken 编码名称，tokenizer_type="tiktoken" 时必填
+        model: 模型名
+        tokenizer_strategy: 分词策略
+        pricing: 计费配置
+        tiktoken_encoding: tiktoken 编码名（仅 TIKTOKEN 策略使用）
     """
 
     model: str
-    tokenizer_type: TokenizerType
+    tokenizer_strategy: TokenizerStrategy
     pricing: ModelPricing
-    tiktoken_encoding: str | None = field(default=None)
+    tiktoken_encoding: str | None = None
 
 
-# ── 支持的模型列表 ────────────────────────────────────────────────────────────
+@dataclass(frozen=True, slots=True)
+class TokenCounter:
+    """
+    Token 计数器
 
-SUPPORTED_MODELS: dict[str, ModelConfig] = {
-    # ── DeepSeek 系列 ──────────────────────────────────────────────
-    "deepseek-chat": ModelConfig(
+    Attributes:
+        model_name: 实际模型名
+        mode: 运行模式
+        spec: 模型配置
+    """
+
+    model_name: str
+    mode: llm_common.LLMMode
+    spec: ModelSpec
+
+    def count(self, text: str) -> tuple[int, str]:
+        """
+        统计文本 Token 数
+
+        Args:
+            text: 输入文本
+
+        Returns:
+            (token 数, 计数来源)
+        """
+        return count_tokens_with_spec(text, self.spec)
+
+
+@dataclass(frozen=True, slots=True)
+class TokenMetrics:
+    """
+    Token 统计结果
+
+    Attributes:
+        input_tokens: 输入 Token
+        output_tokens: 输出 Token
+        tokenizer_source: 计数来源
+        compression_ratio: 字符/输入 Token 压缩比
+        pricing_currency: 货币单位
+        estimated_input_cost: 输入费用估算
+        estimated_output_cost: 输出费用估算
+        estimated_total_cost: 总费用估算
+    """
+
+    input_tokens: int
+    output_tokens: int
+    tokenizer_source: str
+    compression_ratio: float | None
+    pricing_currency: str
+    estimated_input_cost: float
+    estimated_output_cost: float
+    estimated_total_cost: float
+
+    def as_dict(self) -> dict[str, Any]:
+        """转换为字典。"""
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "tokenizer_source": self.tokenizer_source,
+            "compression_ratio": self.compression_ratio,
+            "pricing_currency": self.pricing_currency,
+            "estimated_input_cost": self.estimated_input_cost,
+            "estimated_output_cost": self.estimated_output_cost,
+            "estimated_total_cost": self.estimated_total_cost,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AskAndCountResult:
+    """
+    问答 + 统计聚合结果
+
+    Attributes:
+        mode: 运行模式
+        model: 实际模型
+        base_url: 调用地址
+        question: 提问
+        answer: 回答
+        metrics: Token 统计结果
+    """
+
+    mode: llm_common.LLMMode
+    model: str
+    base_url: str
+    question: str
+    answer: str
+    metrics: TokenMetrics
+
+    def as_dict(self) -> dict[str, Any]:
+        """转换为字典。"""
+        data = {
+            "mode": self.mode.value,
+            "model": self.model,
+            "base_url": self.base_url,
+            "question": self.question,
+            "answer": self.answer,
+        }
+        data.update(self.metrics.as_dict())
+        return data
+
+
+DEEPSEEK_TOKENIZER_DIR = Path(__file__).resolve().parent.parent / "deepseek_v3_tokenizer"
+
+MODEL_SPECS: dict[str, ModelSpec] = {
+    "deepseek-chat": ModelSpec(
         model="deepseek-chat",
-        tokenizer_type="deepseek",
-        pricing=ModelPricing(
-            input_cache_hit_per_1m=0.2,
-            input_cache_miss_per_1m=2.0,
-            output_per_1m=3.0,
-            currency="CNY",
-        ),
+        tokenizer_strategy=TokenizerStrategy.DEEPSEEK,
+        pricing=ModelPricing(0.2, 2.0, 3.0, "CNY"),
     ),
-    # ── OpenAI GPT 系列 ────────────────────────────────────────────
-    # tiktoken 编码参考：https://platform.openai.com/tokenizer
-    # cl100k_base：GPT-4 / GPT-3.5-turbo
-    # o200k_base ：GPT-4o / GPT-4o-mini
-    "gpt-4o": ModelConfig(
+    "gpt-4o": ModelSpec(
         model="gpt-4o",
-        tokenizer_type="tiktoken",
+        tokenizer_strategy=TokenizerStrategy.TIKTOKEN,
+        pricing=ModelPricing(1.25, 2.50, 10.0, "USD"),
         tiktoken_encoding="o200k_base",
-        pricing=ModelPricing(
-            input_cache_hit_per_1m=1.25,
-            input_cache_miss_per_1m=2.50,
-            output_per_1m=10.00,
-            currency="USD",
-        ),
     ),
-    "gpt-4o-mini": ModelConfig(
+    "gpt-4o-mini": ModelSpec(
         model="gpt-4o-mini",
-        tokenizer_type="tiktoken",
+        tokenizer_strategy=TokenizerStrategy.TIKTOKEN,
+        pricing=ModelPricing(0.075, 0.15, 0.60, "USD"),
         tiktoken_encoding="o200k_base",
-        pricing=ModelPricing(
-            input_cache_hit_per_1m=0.075,
-            input_cache_miss_per_1m=0.15,
-            output_per_1m=0.60,
-            currency="USD",
-        ),
     ),
-    "gpt-4-turbo": ModelConfig(
+    "gpt-4-turbo": ModelSpec(
         model="gpt-4-turbo",
-        tokenizer_type="tiktoken",
+        tokenizer_strategy=TokenizerStrategy.TIKTOKEN,
+        pricing=ModelPricing(10.0, 10.0, 30.0, "USD"),
         tiktoken_encoding="cl100k_base",
-        pricing=ModelPricing(
-            input_cache_hit_per_1m=10.0,
-            input_cache_miss_per_1m=10.0,
-            output_per_1m=30.0,
-            currency="USD",
-        ),
     ),
-    # ── Ollama 本地模型（不产生费用）─────────────────────────────────────
-    # Token 计数使用字符比例估算；Ollama API 若返回 usage 则以 API 为准
-    "ollama": ModelConfig(
-        model="ollama",
-        tokenizer_type="ollama",
-        pricing=ModelPricing(0.0, 0.0, 0.0, "N/A"),
-    ),
-    "qwen3:4b": ModelConfig(
-        model="qwen3:4b",
-        tokenizer_type="ollama",
-        pricing=ModelPricing(0.0, 0.0, 0.0, "N/A"),
-    ),
-    "deepseek-r1:1.5b": ModelConfig(
-        model="deepseek-r1:1.5b",
-        tokenizer_type="ollama",
-        pricing=ModelPricing(0.0, 0.0, 0.0, "N/A"),
-    ),
-    "gemma3:4b": ModelConfig(
-        model="gemma3:4b",
-        tokenizer_type="ollama",
-        pricing=ModelPricing(0.0, 0.0, 0.0, "N/A"),
-    ),
+    "qwen3:4b": ModelSpec("qwen3:4b", TokenizerStrategy.RATIO, ModelPricing.free()),
+    "deepseek-r1:1.5b": ModelSpec("deepseek-r1:1.5b", TokenizerStrategy.RATIO, ModelPricing.free()),
+    "gemma3:4b": ModelSpec("gemma3:4b", TokenizerStrategy.RATIO, ModelPricing.free()),
 }
 
+LOCAL_GENERIC_SPEC = ModelSpec("local-generic", TokenizerStrategy.RATIO, ModelPricing.free())
 
-# ── 核心函数 ──────────────────────────────────────────────────────────────────
+
+def _safe_int(value: Any) -> int:
+    """安全转换为整数，非法值返回 0。"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
-def get_model_config(model_name: str, fallback_ollama: bool = False) -> ModelConfig:
-    """获取模型配置。
+def _ratio_token_count(text: str) -> int:
+    """
+    按字符比例估算 Token
+
+    规则：
+      - 中文字符约 0.6 Token
+      - 其他字符约 0.3 Token
+    """
+    if not text:
+        return 0
+    chinese_count = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    other_count = len(text) - chinese_count
+    return max(1, round(chinese_count * 0.6 + other_count * 0.3))
+
+
+@lru_cache(maxsize=4)
+def _get_tiktoken_encoder(encoding_name: str):
+    """获取并缓存 tiktoken 编码器。"""
+    try:
+        import tiktoken  # type: ignore
+    except ImportError as exc:
+        raise ImportError("使用 tiktoken 分词需安装依赖：pip install tiktoken") from exc
+    return tiktoken.get_encoding(encoding_name)
+
+
+@lru_cache(maxsize=1)
+def _load_deepseek_tokenizer():
+    """尝试加载 DeepSeek 官方分词器，失败返回 None。"""
+    try:
+        from transformers import AutoTokenizer  # type: ignore
+    except ImportError:
+        return None
+
+    if not DEEPSEEK_TOKENIZER_DIR.exists():
+        return None
+
+    try:
+        return AutoTokenizer.from_pretrained(str(DEEPSEEK_TOKENIZER_DIR), trust_remote_code=True)
+    except Exception:
+        return None
+
+
+def resolve_model_spec(model_name: str, *, mode: llm_common.LLMMode) -> ModelSpec:
+    """
+    解析模型配置
 
     Args:
         model_name: 模型名称
-        fallback_ollama: 未命中时是否回退到 Ollama 配置（用于任意 Ollama 模型名）
+        mode: 运行模式
+
+    Returns:
+        模型配置
 
     Raises:
-        ValueError: 当模型不在支持列表中且 fallback_ollama=False 时抛出
+        ValueError: cloud 模式下模型未注册时抛出
     """
-    if model_name in SUPPORTED_MODELS:
-        return SUPPORTED_MODELS[model_name]
-    if fallback_ollama:
-        return SUPPORTED_MODELS["ollama"]
-    raise ValueError(f"不支持的模型: {model_name}，支持: {', '.join(SUPPORTED_MODELS.keys())}")
+    spec = MODEL_SPECS.get(model_name)
+    if spec is not None:
+        return spec
+    if mode == llm_common.LLMMode.LOCAL:
+        return LOCAL_GENERIC_SPEC
+    raise ValueError(f"cloud 模式下未注册模型: {model_name}")
 
 
-def count_tokens_local(text: str, config: ModelConfig) -> tuple[int, str]:
-    """根据模型配置本地估算 Token 数，返回 (token_count, source)。
-
-    source 说明计数来源：
-      - "tiktoken"           ：GPT 系列，tiktoken 精确计数
-      - "official_tokenizer" ：DeepSeek，官方分词器精确计数
-      - "ratio_estimate"     ：DeepSeek 兜底，按官方比例估算
-
-    注意：API 返回的 usage.prompt_tokens 比任何本地计数都准确，
-    本函数仅用于 API 不返回 usage 时的兜底估算。
+def count_tokens_with_spec(text: str, spec: ModelSpec) -> tuple[int, str]:
     """
-    if config.tokenizer_type == "tiktoken":
-        enc = _get_tiktoken_encoder(config.tiktoken_encoding or "cl100k_base")
-        return len(enc.encode(text)), "tiktoken"
+    根据模型配置统计 Token
 
-    if config.tokenizer_type == "ollama":
-        chinese_count = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-        other_count = len(text) - chinese_count
-        estimated = max(1, round(chinese_count * 0.6 + other_count * 0.3))
-        return estimated, "ratio_estimate"
+    Args:
+        text: 输入文本
+        spec: 模型配置
 
-    # DeepSeek 策略
-    if _deepseek_tokenizer is not None:
-        return len(_deepseek_tokenizer.encode(text)), "official_tokenizer"
+    Returns:
+        (token 数量, 来源)
+    """
+    match spec.tokenizer_strategy:
+        case TokenizerStrategy.TIKTOKEN:
+            encoding_name = spec.tiktoken_encoding or "cl100k_base"
+            encoder = _get_tiktoken_encoder(encoding_name)
+            return len(encoder.encode(text)), "tiktoken"
+        case TokenizerStrategy.DEEPSEEK:
+            tokenizer = _load_deepseek_tokenizer()
+            if tokenizer is not None:
+                return len(tokenizer.encode(text)), "official_tokenizer"
+            return _ratio_token_count(text), "ratio_estimate"
+        case TokenizerStrategy.RATIO:
+            return _ratio_token_count(text), "ratio_estimate"
 
-    # DeepSeek 官方比例兜底：1 中文字符 ≈ 0.6 token，1 其他字符 ≈ 0.3 token
-    chinese_count = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-    other_count = len(text) - chinese_count
-    estimated = max(1, round(chinese_count * 0.6 + other_count * 0.3))
-    return estimated, "ratio_estimate"
+
+def create_token_counter(
+    *,
+    model_name: str | None = None,
+    mode: llm_common.LLMMode | str | None = None,
+) -> TokenCounter:
+    """
+    创建可复用 Token 计数器
+
+    Args:
+        model_name: 模型名，不传则使用模式默认模型
+        mode: local/cloud，不传则读取 LLM_MODE
+
+    Returns:
+        TokenCounter 实例
+    """
+    resolved_mode = llm_common.resolve_mode(mode)
+    resolved_model = model_name or llm_common.default_model_for_mode(resolved_mode)
+    spec = resolve_model_spec(resolved_model, mode=resolved_mode)
+    return TokenCounter(model_name=resolved_model, mode=resolved_mode, spec=spec)
 
 
 def calculate_token_metrics(
+    *,
     question: str,
     answer: str,
     usage: Any,
-    *,
-    model_name: str = "deepseek-chat",
-    fallback_ollama: bool = False,
-) -> dict[str, Any]:
-    """计算输入输出 Token、压缩比和费用。
+    counter: TokenCounter,
+) -> TokenMetrics:
+    """
+    计算 Token 指标与费用
 
     Args:
-        question: 用户输入文本
-        answer: 模型回答文本
-        usage: API 返回的 usage 对象（可能为 None）
-        model_name: 模型名称
-        fallback_ollama: 模型未配置时是否回退到 Ollama 配置（用于任意 Ollama 模型名）
+        question: 输入文本
+        answer: 输出文本
+        usage: API usage（可能为 None）
+        counter: 计数器
 
     Returns:
-        包含输入输出 token、压缩比、费用与 tokenizer 来源的字典
+        结构化指标对象
     """
-    config = get_model_config(model_name, fallback_ollama=fallback_ollama)
-
     if usage is not None:
-        # 优先使用 API 返回的精确值
-        input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-        output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-        prompt_cache_hit_tokens = int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
-        prompt_cache_miss_tokens = int(getattr(usage, "prompt_cache_miss_tokens", 0) or 0)
-        if prompt_cache_hit_tokens + prompt_cache_miss_tokens == 0:
-            prompt_cache_miss_tokens = input_tokens
-        tokenizer_source = "api_usage"
+        input_tokens = _safe_int(getattr(usage, "prompt_tokens", 0))
+        output_tokens = _safe_int(getattr(usage, "completion_tokens", 0))
+        cache_hit = _safe_int(getattr(usage, "prompt_cache_hit_tokens", 0))
+        cache_miss = _safe_int(getattr(usage, "prompt_cache_miss_tokens", 0))
+        if cache_hit + cache_miss == 0:
+            cache_miss = input_tokens
+        source = "api_usage"
     else:
-        # API 无 usage 时本地兜底
-        input_tokens, tokenizer_source = count_tokens_local(question, config)
-        output_tokens, _ = count_tokens_local(answer, config)
-        prompt_cache_hit_tokens = 0
-        prompt_cache_miss_tokens = input_tokens
+        input_tokens, source = counter.count(question)
+        output_tokens, _ = counter.count(answer)
+        cache_hit = 0
+        cache_miss = input_tokens
 
-    pricing = config.pricing
-    input_cost = (prompt_cache_hit_tokens / 1_000_000) * pricing.input_cache_hit_per_1m + (
-        prompt_cache_miss_tokens / 1_000_000
+    pricing = counter.spec.pricing
+    input_cost = (cache_hit / 1_000_000) * pricing.input_cache_hit_per_1m + (
+        cache_miss / 1_000_000
     ) * pricing.input_cache_miss_per_1m
     output_cost = (output_tokens / 1_000_000) * pricing.output_per_1m
     total_cost = input_cost + output_cost
 
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "tokenizer_source": tokenizer_source,
-        "compression_ratio": round(len(question) / input_tokens, 2) if input_tokens else None,
-        "pricing_currency": pricing.currency,
-        "estimated_input_cost": round(input_cost, 6),
-        "estimated_output_cost": round(output_cost, 6),
-        "estimated_total_cost": round(total_cost, 6),
-    }
+    return TokenMetrics(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        tokenizer_source=source,
+        compression_ratio=round(len(question) / input_tokens, 2) if input_tokens else None,
+        pricing_currency=pricing.currency,
+        estimated_input_cost=round(input_cost, 6),
+        estimated_output_cost=round(output_cost, 6),
+        estimated_total_cost=round(total_cost, 6),
+    )
 
 
-def run_deepseek_and_count(
+def ask_and_count(
     text: str,
     *,
-    model_name: str = "deepseek-chat",
+    mode: llm_common.LLMMode | str | None = None,
+    model_name: str | None = None,
     prefer_dotenv: bool = False,
-) -> dict[str, Any]:
-    """执行 DeepSeek 问答并输出完整统计结果。"""
-    qa_result = deepseek_common.ask_deepseek(
+) -> AskAndCountResult:
+    """
+    执行问答并输出 Token 统计
+
+    Args:
+        text: 输入文本
+        mode: local/cloud，不传则读取 LLM_MODE
+        model_name: 模型名，不传则使用模式默认模型
+        prefer_dotenv: 是否优先使用 .env 覆盖环境变量
+
+    Returns:
+        聚合结果对象
+    """
+    counter = create_token_counter(model_name=model_name, mode=mode)
+    qa = llm_common.ask(
         text,
-        model_name=model_name,
+        model_name=counter.model_name,
+        mode=counter.mode,
         prefer_dotenv=prefer_dotenv,
     )
     metrics = calculate_token_metrics(
         question=text,
-        answer=qa_result["answer"],
-        usage=qa_result["usage"],
-        model_name=model_name,
+        answer=qa.answer,
+        usage=qa.usage,
+        counter=counter,
     )
-
-    return {
-        "model": qa_result["model"],
-        "base_url": qa_result["base_url"],
-        "question": text,
-        "answer": qa_result["answer"],
-        **metrics,
-    }
-
-
-def run_ollama_and_count(
-    text: str,
-    *,
-    model_name: str = "llama3.2",
-    prefer_dotenv: bool = False,
-) -> dict[str, Any]:
-    """执行 Ollama 本地问答并输出完整统计结果，不产生费用。"""
-    qa_result = deepseek_common.ask_ollama(
-        text,
-        model_name=model_name,
-        prefer_dotenv=prefer_dotenv,
-    )
-    metrics = calculate_token_metrics(
+    return AskAndCountResult(
+        mode=counter.mode,
+        model=qa.model,
+        base_url=qa.base_url,
         question=text,
-        answer=qa_result["answer"],
-        usage=qa_result["usage"],
-        model_name=model_name,
-        fallback_ollama=True,
+        answer=qa.answer,
+        metrics=metrics,
     )
 
-    return {
-        "model": qa_result["model"],
-        "base_url": qa_result["base_url"],
-        "question": text,
-        "answer": qa_result["answer"],
-        **metrics,
-    }
+
+def _print_result(result: AskAndCountResult) -> None:
+    """打印结果到终端。"""
+    print("\n=== 回答结果 ===")
+    print(result.answer)
+
+    print("\n=== Token 统计 ===")
+    print(f"模式：{result.mode.value}")
+    print(f"模型：{result.model}")
+    print(f"接口地址：{result.base_url}")
+    print(f"Token 计数来源：{result.metrics.tokenizer_source}")
+    print(f"输入 Token：{result.metrics.input_tokens}")
+    print(f"输出 Token：{result.metrics.output_tokens}")
+    print(f"压缩比（字符/Token）：{result.metrics.compression_ratio}")
+    print(f"预计输入费用（{result.metrics.pricing_currency}）：{result.metrics.estimated_input_cost}")
+    print(f"预计输出费用（{result.metrics.pricing_currency}）：{result.metrics.estimated_output_cost}")
+    print(f"预计总费用（{result.metrics.pricing_currency}）：{result.metrics.estimated_total_cost}")
 
 
 def main() -> None:
-    """命令行入口函数。
-
-    示例：
-        # 默认使用 qwen3:4b
-        uv run token_count.py --provider ollama --text "介绍一下 KV-Cache"
-
-        # 指定其他本地模型
-        uv run token_count.py --provider ollama --model deepseek-r1:1.5b --text "你好"
-        uv run token_count.py --provider ollama --model gemma3:4b --text "你好"
     """
-    import argparse
+    命令行入口
 
-    parser = argparse.ArgumentParser(description="LLM 问答 + Token 统计（支持 DeepSeek / Ollama / GPT）")
-    parser.add_argument("--provider", choices=["deepseek", "ollama"], default="deepseek")
-    parser.add_argument("--model", default=None, help="模型名称；ollama 默认 qwen3:4b")
-    parser.add_argument("--text", default=None, help="输入文本；不传则进入交互输入")
-    parser.add_argument("--prefer-dotenv", action="store_true", help="使用 .env 覆盖当前环境变量")
+    示例:
+        uv run token_count.py --mode local --text "你好"
+        uv run token_count.py --mode cloud --model deepseek-chat --text "介绍注意力机制"
+    """
+    parser = argparse.ArgumentParser(description="LLM 问答 + Token 统计（local/cloud）")
+    parser.add_argument("--mode", choices=["local", "cloud"], default=None, help="运行模式，默认读取 LLM_MODE")
+    parser.add_argument("--model", default=None, help="模型名称，不传时按模式使用默认模型")
+    parser.add_argument("--text", default=None, help="输入文本，不传则进入交互输入")
+    parser.add_argument("--prefer-dotenv", action="store_true", help="是否优先使用 .env 覆盖环境变量")
     args = parser.parse_args()
-
-    model = args.model or ("qwen3:4b" if args.provider == "ollama" else "deepseek-chat")
 
     text = (args.text or "").strip()
     if not text:
@@ -363,25 +457,13 @@ def main() -> None:
     if not text:
         raise ValueError("输入文本不能为空")
 
-    if args.provider == "ollama":
-        result = run_ollama_and_count(text, model_name=model, prefer_dotenv=args.prefer_dotenv)
-    else:
-        result = run_deepseek_and_count(text, model_name=model, prefer_dotenv=args.prefer_dotenv)
-
-    print("\n=== 回答结果 ===")
-    print(result["answer"])
-
-    print("\n=== Token 统计 ===")
-    print(f"模型：{result['model']}")
-    print(f"接口地址：{result['base_url']}")
-    print(f"Token 计数来源：{result['tokenizer_source']}")
-    print(f"输入 Token：{result['input_tokens']}")
-    print(f"输出 Token：{result['output_tokens']}")
-    print(f"压缩比（字符/Token）：{result['compression_ratio']}")
-    currency = result["pricing_currency"]
-    print(f"预计输入费用（{currency}）：{result['estimated_input_cost']}")
-    print(f"预计输出费用（{currency}）：{result['estimated_output_cost']}")
-    print(f"预计总费用（{currency}）：{result['estimated_total_cost']}")
+    result = ask_and_count(
+        text,
+        mode=args.mode,
+        model_name=args.model,
+        prefer_dotenv=args.prefer_dotenv,
+    )
+    _print_result(result)
 
 
 if __name__ == "__main__":
